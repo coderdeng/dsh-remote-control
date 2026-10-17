@@ -88,10 +88,20 @@ nano ~/.dsh/profiles/dsh-worker/cordis.patch.yml
         port: 7801
         workspaceRoot: '/Users/<你的用户名>/dsh-work'
         permissionPreset: danger-full-access   # 远端会话自动执行，不弹审批
+        # 模型路由：不填则用 B 的 DSH 默认选择（base 默认是 deepseek-official/deepseek-flash）。
+        # 如果 B 是「DSH 账号登录」（桌面版默认），通常填下面两行：
+        provider: deepseek-account
+        model: deepseek-flash
+        # 如果 B 用 API Key：provider: deepseek-official，并确保 B 的 DSH 凭据/env
+        # 里有可用的 DEEPSEEK_API_KEY。若 B 用的是自定义/第三方 provider（在 B 的
+        # desktop profile patch 里配置的那套），需要把对应 provider 配置与 provider/model
+        # 也加到本 worker profile 的 patch 里。
 ```
 
 > worker 直接使用 B 的默认 DSH_HOME（`~/.dsh`），复用 B 上已有的模型登录。
 > **不要**把 A 的 `.credentials.yaml` 复制到 B（会互相顶掉登录）；B 若未登录，先在 B 上正常打开 DSH 登录。
+> 启动后用 `curl .../v1/hello` 看 `selection` 字段确认实际模型路由；如果 agent 报"模型不可用"，
+> 改上面的 `provider`/`model` 后重启 worker。
 
 ### 1.5 启动并验证
 
@@ -196,15 +206,17 @@ agent 会调用 `remote_dsh_hosts`；显示 online 后即可：
 
 ## 5. 可选安装方式：作为 DSH bundle 安装（方式 B）
 
-在 B 上（需要 B 能访问 git 仓库，且 `dsh` 自带 pnpm 可用）：
+前提：B 能访问该 git 仓库与 npm registry（DSH 自带 pnpm）；公开仓库免凭据，私有仓库需 B 上有访问凭据。
+本仓库根目录就是包本身，带 `dsh.bundle.patch`，可以直接按 bundle 安装：
 
 ```bash
 dsh plugin --profile dsh-worker add git+<repo-url>
-# 或固定在某个提交：git+<repo-url>#<commit>
+# 或固定提交：dsh plugin --profile dsh-worker add 'git+<repo-url>#<commit>'
 ```
 
-安装后该 bundle 会向 profile 插入一条默认禁用的 `remote-control` 行；在
-`~/.dsh/profiles/dsh-worker/cordis.patch.yml` 中启用并配置：
+首次执行会自动初始化一个 **base profile**，并把它加入 `dsh.profile.bundles`；bundle 的
+`cordis.patch.yml` 会向组合中插入一条默认禁用的 `remote-control` 行。随后编辑
+`~/.dsh/profiles/dsh-worker/cordis.patch.yml` 启用并配置：
 
 ```yaml
 - id: remote-control
@@ -216,10 +228,16 @@ dsh plugin --profile dsh-worker add git+<repo-url>
     port: 7801
     workspaceRoot: '/Users/<你>/dsh-work'
     permissionPreset: danger-full-access
+    provider: deepseek-account      # 见 1.4 节模型路由说明
+    model: deepseek-flash
 ```
 
-> 方式 B 依赖 pnpm 从 git 拉取并写入 profile；若你的 DSH 环境不能访问 npm registry 或 git 仓库，
-> 请使用方式 A（clone + file URL）。私有仓库在两种方式下都需要 B 具备仓库访问凭据。
+然后 `dsh --profile dsh-worker` 启动即可（base profile 没有 stdio app，插件自己让进程常驻）。
+验证方式与 1.5 节相同。
+
+> 该方式已在本机用 `git+file://` 的本地仓库实测：bundle 安装成功、组合出
+> `remote-control` 行、base profile 启动后 `/v1/hello` 正常返回。真实 GitHub/Gitee 地址同理，
+> 只是需要 B 能 `git ls-remote` / `pnpm` 访问该仓库；若 B 网络受限，请使用方式 A（clone + file URL）。
 
 ---
 
