@@ -12,7 +12,8 @@
 | `（本仓库根目录）` | 插件本体（零外部依赖，单包两端：controller / worker） |
 | `lib/protocol.js` | HTTP JSON 协议、事件→转录文本渲染、会话转录环形缓冲 |
 | `lib/worker.js` | 被控端：LAN HTTP 服务 + 用 `ctx.agents` 驱动真实 DSH 会话 |
-| `lib/controller.js` | 控制端：注册 7 个 `remote_dsh_*` agent 工具 |
+| `lib/controller.js` | 控制端：注册 9 个 `remote_dsh_*` agent 工具（含配对） |
+| `scripts/worker-setup.sh` | B 端一键自配置脚本（找 dsh、装插件、生成 token、选端口、写配置、启动、打印配对码） |
 | `lib/index.js` | bundle 入口（按 `config.role` 分发） |
 | `plugins/dsh-remote-control/tools/worker-smoke.mjs` | 冒烟测试（含 resume） |
 | `plugins/dsh-remote-control/tools/worker-client.mjs` | 手工调试客户端（直接发任务到 worker） |
@@ -37,10 +38,21 @@
 5. **会话持久化与 resume**：close 后 `POST /v1/sessions/resume` 能恢复同一持久会话并继续回答（smoke 测试 PASS）。
 6. **controller 在真实 agent 循环中可用**：
    - 在 SDK profile 的 agent 里，模型自主调用 `remote_dsh_hosts / start / wait` 并正确总结远端结果；
-   - 在本机 Desktop app 的当前会话里（HMR 实时加载插件后），模型侧工具列表出现 7 个 `remote_dsh_*`
+   - 在本机 Desktop app 的当前会话里（HMR 实时加载插件后），模型侧工具列表出现 `remote_dsh_*` 工具
      工具，并成功用 `remote_dsh_start` 在 worker 上跑完任务、拿回中文回答。
 7. **HMR 热生效**：向 `~/.dsh/profiles/desktop/cordis.patch.yml` 追加插件行或修改 `hosts` 后，
    无需重启 DSH，下一步即生效（已改回 `hosts: []`，等待用户填真实远端）。
+
+## 2.5 零配置安装（0.2.0 起）
+
+- **B 端自配置**：`scripts/worker-setup.sh` 一条命令完成 找 dsh → clone 仓库 → 建 profile →
+  生成/复用 token → 选空闲端口 → 写 profile patch → 建 workspace → 后台启动 → 等待 `/v1/hello` →
+  打印配对码；支持 `--dry-run/--status/--stop/--mode bundle`，重复运行即升级并重启（token 复用）。
+- **worker 自身容错**：未配置 token 时自动生成（不再拒绝启动）；配置端口被占用时自动
+  顺延到下一个空闲端口；启动后把 endpoint/token/配对码写入 `<DSH_HOME>/dsh-remote-control/worker.json`（0600）。
+- **A 端配对**：新增 `remote_dsh_pair` / `remote_dsh_unpair` 工具，A 的 agent 收到配对码后
+  验证并写入 `<DSH_HOME>/dsh-remote-control/hosts.json`（0600），与 config.hosts 合并使用，
+  因此加远端不需要编辑 profile 配置。
 
 ## 3. 架构
 
@@ -49,7 +61,7 @@
 │ 用户在聊天里说「让另一台电脑做 X」                        │        │                                          │
 │   ↓                                                       │  LAN   │  dsh --profile dsh-worker                │
 │ 本机 agent                                                   │  HTTP  │   └─ remote-control worker 插件          │
-│   └─ remote_dsh_start / wait / send / ...（7 个工具）        │◀──────▶│        ├─ node:http 监听 :7801          │
+│   └─ remote_dsh_pair / start / wait / send / ...（9 个工具） │◀──────▶│        ├─ node:http 监听 :7801          │
 │        controller 插件 ── Bearer token ── HTTP JSON ────────┼────────┼──▶      ├─ ctx.agents.create/resume       │
 │                                                           │        │        ├─ agent.followup / whenIdle      │
 │                                                           │        │        └─ session/event → 转录缓冲       │
@@ -88,7 +100,7 @@
 user/assistant 消息、tool call/result（截断）、turn end（异常时）、权限/沙箱变更、压缩、错误；
 工具结果默认截断到 900 字符，整段转录有字符预算（默认 12000），超长时保留头尾。
 
-## 5. controller 的 7 个工具
+## 5. controller 的工具
 
 | 工具 | 作用 |
 | --- | --- |
@@ -99,6 +111,8 @@ user/assistant 消息、tool call/result（截断）、turn end（异常时）�
 | `remote_dsh_status` | 单会话状态，或列出远端全部活会话 |
 | `remote_dsh_log` | 不等待，直接读某游标之后的转录（回看中间细节） |
 | `remote_dsh_abort` | 停止远端当前轮次 |
+| `remote_dsh_pair` | 用 worker 打印的配对码（`dshrc1.…`）验证并持久保存远端，免改配置 |
+| `remote_dsh_unpair` | 移除通过配对码添加的远端 |
 
 工具描述里写明了正确用法（自包含 prompt、先 start 再 wait、远端是另一台机器），
 实测模型（deepseek-account/deepseek-flash）能正确按此流程自主调用。
@@ -106,6 +120,8 @@ user/assistant 消息、tool call/result（截断）、turn end（异常时）�
 ## 6. 安全模型与已知取舍
 
 - **token 是唯一凭据**：控制端与被控端共享一个 ≥16 字符的随机 token；恒定时间比较。
+  token 未配置时 worker 会自动生成并写入 `<DSH_HOME>/dsh-remote-control/worker.json`（0600），
+  同时以配对码形式打印到日志；配对码等同 token，必须当作密码保管。
   未配置 token 时 worker 拒绝启动（不会静默裸奔）。
 - **局域网明文 HTTP**：同一可信局域网场景；token 会以明文随请求传输，**不要**在不可信网络/公网使用。
   后续可加 TLS（`node:https` + 自签证书 + controller 指纹校验）或反向代理。

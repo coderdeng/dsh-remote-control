@@ -4,15 +4,23 @@
 //
 // Run: node --test plugins/dsh-remote-control/test/bridge.test.mjs
 
+// Run against an isolated harness home so state files never touch the real one.
+process.env.DSH_HOME = join(tmpdir(), 'dsh-remote-control-test-home')
+
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
 
 import {
   PLUGIN_VERSION,
   PROTOCOL_VERSION,
   RemoteControlError,
   SessionTranscript,
+  decodePairingCode,
+  encodePairingCode,
   normalizeHost,
   renderEvent,
   tokenMatches,
@@ -198,12 +206,26 @@ test('normalizeHost validates and normalizes entries', () => {
   assert.throws(() => normalizeHost('a', 'http://10.0.0.2:7801/'), /token/u)
 })
 
-test('worker config requires a real token', () => {
-  assert.throws(() => normalizeWorkerConfig({}), RemoteControlError)
+test('worker config auto-generates a token when omitted, rejects short configured tokens', () => {
+  const generated = normalizeWorkerConfig({})
+  assert.equal(generated.tokenSource, 'generated')
+  assert.equal(generated.token.length, 48)
   assert.throws(() => normalizeWorkerConfig({ token: 'short' }), /16 characters/u)
   const config = normalizeWorkerConfig({ token: 'x'.repeat(24), port: '8080', listenHost: '' })
   assert.equal(config.port, 8080)
   assert.equal(config.listenHost, '0.0.0.0')
+  assert.equal(config.tokenSource, 'config')
+})
+
+test('pairing codes round-trip endpoint, name and token', () => {
+  const code = encodePairingCode({ name: 'work-mac', endpoint: 'http://192.168.1.20:7801', token: 't'.repeat(24) })
+  assert.ok(code.startsWith('dshrc1.'))
+  const host = decodePairingCode(code)
+  assert.equal(host.name, 'work-mac')
+  assert.equal(host.endpoint, 'http://192.168.1.20:7801')
+  assert.equal(host.token, 't'.repeat(24))
+  assert.throws(() => decodePairingCode('nope'), /invalid pairing code/u)
+  assert.throws(() => decodePairingCode('dshrc1.bm90LWpzb24'), /invalid pairing code/u)
 })
 
 test('controller config tolerates an empty host list until configured', () => {
@@ -292,12 +314,59 @@ test('worker serves sessions and controller drives them end to end', async () =>
     assert.equal(aborted.aborted, true)
     assert.equal(fake.inbox.length, 2)
 
+    // Pairing flow: a fresh controller with zero configured hosts pairs the running
+    // worker from its pairing code, persists it under DSH_HOME, and can unpair it.
+    assert.ok(helloBody.pairing.code.startsWith('dshrc1.'))
+    assert.equal(decodePairingCode(helloBody.pairing.code).endpoint, `http://127.0.0.1:${port}`)
+    const { ctx: pairingCtx, definitions: pairingDefinitions } = fakeControllerContext()
+    const pairingController = new ControllerRuntime(pairingCtx, {})
+    pairingController.register()
+    const pairTools = new Map(pairingDefinitions.map((definition) => [definition.name, definition]))
+    const pairedCode = encodePairingCode({ name: 'paired-remote', endpoint: `http://127.0.0.1:${port}`, token })
+    const paired = await pairTools.get('remote_dsh_pair').execute({ code: pairedCode }, exec)
+    assert.equal(paired.paired, true)
+    assert.equal(paired.host, 'paired-remote')
+    assert.equal(paired.updated, false)
+    const pairedHosts = await pairTools.get('remote_dsh_hosts').execute({}, exec)
+    assert.equal(pairedHosts.hosts.length, 1)
+    assert.equal(pairedHosts.hosts[0].online, true)
+    const stateFile = join(process.env.DSH_HOME, 'dsh-remote-control', 'hosts.json')
+    const stateDocument = JSON.parse(await readFile(stateFile, 'utf8'))
+    assert.equal(stateDocument.hosts[0].name, 'paired-remote')
+    assert.equal(stateDocument.hosts[0].endpoint, `http://127.0.0.1:${port}`)
+    const removed = await pairTools.get('remote_dsh_unpair').execute({ name: 'paired-remote' }, exec)
+    assert.equal(removed.removed, 'paired-remote')
+    assert.deepEqual(removed.remaining, [])
+    const repersisted = JSON.parse(await readFile(stateFile, 'utf8'))
+    assert.deepEqual(repersisted.hosts, [])
+
     // Renderers return model-readable text for every tool.
     for (const definition of definitions) {
-      const rendered = definition.output.render({}, { host: 'remote', sessionId: 'session-x', status: 'idle', output: 'out', nextSeq: 1, sessions: [], controller: { hostname: 'h', pluginVersion: 'v', protocol: 1 }, hosts: [] })
+      const rendered = definition.output.render({}, { paired: true, updated: false, host: 'remote', endpoint: 'http://x', sessionId: 'session-x', status: 'idle', output: 'out', nextSeq: 1, sessions: [], remaining: [], controller: { hostname: 'h', pluginVersion: 'v', protocol: 1 }, hosts: [] })
       assert.ok(Array.isArray(rendered) && rendered[0].type === 'text' && typeof rendered[0].text === 'string')
     }
   } finally {
     await worker.close()
+  }
+})
+
+test('worker falls back to the next free port when the configured one is taken', async () => {
+  const { ctx } = fakeWorkerContext()
+  const port = await freePort()
+  const token = 'fallback-token-0123456789'
+  const first = new WorkerRuntime(ctx, { token, listenHost: '127.0.0.1', port })
+  first.open()
+  const second = new WorkerRuntime(ctx, { token, listenHost: '127.0.0.1', port })
+  try {
+    second.open()
+    const deadline = Date.now() + 5000
+    while (second.boundPort === undefined && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.ok(second.boundPort !== undefined)
+    assert.notEqual(second.boundPort, first.boundPort)
+    const response = await fetch(`http://127.0.0.1:${second.boundPort}/v1/hello`, { headers: { authorization: `Bearer ${token}` } })
+    assert.equal(response.status, 200)
+  } finally {
+    await second.close()
+    await first.close()
   }
 })

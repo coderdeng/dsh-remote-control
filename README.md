@@ -2,69 +2,82 @@
 
 DeepSeek Harness（DSH）跨机远程控制插件：一个包、两种角色，零第三方依赖。
 
-- **controller**（控制端，装在你坐着的电脑 A）：向 DSH agent 注册 7 个 `remote_dsh_*` 工具，
+- **controller**（控制端，装在你坐着的电脑 A）：向 DSH agent 注册 `remote_dsh_*` 工具，
   让你在聊天里直接指挥另一台电脑执行 DSH 会话任务。
 - **worker**（被控端，装在另一台电脑 B）：常驻一个局域网 HTTP 服务，用 B 的本机 DSH
   创建/驱动真实会话，并把持久会话事件渲染成转录回传。
 
-## 快速安装
+## 最快路径（零配置）
 
-### B 端（被控电脑）
+### B 端（被控电脑，macOS/Linux）
 
 ```bash
-git clone https://github.com/coderdeng/dsh-remote-control.git ~/dsh-remote-control
-dsh --profile dsh-worker --from-default-profile sdk --dump-config > /dev/null
-# 编辑 ~/.dsh/profiles/dsh-worker/cordis.patch.yml（见 docs/SETUP.md 1.4 节）
-dsh --profile dsh-worker
+curl -fsSL https://raw.githubusercontent.com/coderdeng/dsh-remote-control/main/scripts/worker-setup.sh | bash
+```
+
+脚本会自动：找 `dsh` 命令、clone 本仓库到 `~/dsh-remote-control`、创建 `dsh-worker` profile、
+生成 token、选空闲端口、写配置、创建 `~/dsh-work`、后台启动 worker，最后打印一条**配对码**
+（`dshrc1.…`，含地址+token，等同于密码，只发给你的 A 端 agent）。
+
+常用参数 / 运维：
+
+```bash
+bash scripts/worker-setup.sh --dry-run          # 只打印计划，不改任何东西
+bash scripts/worker-setup.sh                    # 重跑：升级插件并重启 worker（token 复用）
+bash scripts/worker-setup.sh --status           # 查看状态 / 配对码
+bash scripts/worker-setup.sh --stop             # 停止 worker
+bash scripts/worker-setup.sh --mode bundle      # 改为以 DSH bundle 方式安装
 ```
 
 ### A 端（控制电脑）
 
-在 DSH profile 的 `cordis.patch.yml` 中插入（路径换成 A 上本仓库的绝对路径）：
+把 B 打印的配对码发给 A 的 DSH agent：
 
-```yaml
-- insert:
-    - id: remote-control
-      name: 'file:///path/to/dsh-remote-control/lib/controller.js'
-      config:
-        hosts:
-          - name: work-mac
-            endpoint: 'http://192.168.1.20:7801'
-            token: '<与 worker 相同的 token>'
-```
+> 把这条配对码配对成远端电脑：`dshrc1.……`
 
-保存即由 HMR 生效（插件代码首次挂载/更新后重启一次 DSH）。
+agent 会调用 `remote_dsh_pair` 验证连通并持久保存（写入 `~/.dsh/dsh-remote-control/hosts.json`，
+**不需要改 profile 配置**）。之后直接说「让另一台电脑做 XXX」即可。也可以用
+`remote_dsh_unpair` 移除。
 
-完整步骤（含 token、防火墙、验证脚本、排障、bundle 安装方式）见 **[docs/SETUP.md](docs/SETUP.md)**；
-架构、协议、工具与 Phase B 计划见 **[docs/DESIGN.md](docs/DESIGN.md)**。
+> A 端插件首次安装/升级后需要重启一次 DSH 才加载新代码；之后配对、加/删远端都不需要重启。
+
+## 手动安装（不跑脚本时）
+
+B 端 clone 后按 [docs/SETUP.md](docs/SETUP.md) 的 §1 手动配置 worker；A 端可以继续用配对码，
+或在 profile 的 `cordis.patch.yml` 里手写 `hosts`（见 SETUP §3）。
+
+## 工具（A 端 agent 可见）
+
+| 工具 | 作用 |
+| --- | --- |
+| `remote_dsh_hosts` | 列出远端 + 在线探测 |
+| `remote_dsh_pair` / `remote_dsh_unpair` | 用配对码添加 / 移除远端（免改配置） |
+| `remote_dsh_start` | 在远端建会话、入队任务（可 resume 旧会话） |
+| `remote_dsh_wait` | 长轮询到远端空闲并返回增量转录 |
+| `remote_dsh_send` / `remote_dsh_status` / `remote_dsh_log` / `remote_dsh_abort` | 后续消息 / 状态 / 回看 / 中断 |
 
 ## 目录
 
 ```
-lib/index.js       bundle 入口：按 config.role 分发（也可在 profile 里直接指向下面两个文件）
-lib/controller.js  控制器：7 个 remote_dsh_* 工具 + HTTP 客户端 + 转录游标
-lib/worker.js      被控端：HTTP JSON 服务 + 会话管理 + 权限预设 + 长轮询
-lib/protocol.js    协议常量、认证、事件→转录文本渲染、SessionTranscript
-tools/             调试/冒烟/测试驱动脚本
-test/              node --test 用例（假 DSH 上下文 + 真实 HTTP）
-docs/              安装指南（SETUP.md）与设计说明（DESIGN.md）
+lib/       插件本体（worker.js / controller.js / protocol.js / index.js）
+scripts/   worker-setup.sh 一键部署脚本
+docs/      SETUP.md 手动安装与排障；DESIGN.md 架构、协议、工具与 Phase B 计划
+tools/     worker-smoke.mjs 冒烟、worker-client.mjs 手工客户端、sdk-drive.mjs 测试驱动
+test/      node --test 用例（假 DSH 上下文 + 真实 HTTP + 配对流程）
 ```
 
-## 测试
+## 本地验证
 
 ```bash
 node --test test/bridge.test.mjs
 node tools/worker-smoke.mjs http://127.0.0.1:7801 <token>
 ```
 
-## 兼容性
+## 兼容性与安全
 
-针对 DSH 0.2.1-rc.2 验证。插件只使用有文档的 Cordis 服务
-（`agents`、`tools`、`permissionPresets`、会话事件），不 import 任何 `@deepseek-ai/*` 包，
-因此既能作为安装包加载，也能通过 profile patch 的 file URL 直接加载。
+针对 DSH 0.2.1-rc.2 验证。插件只使用有文档的 Cordis 服务（`agents`、`tools`、
+`permissionPresets`、会话事件），不 import 任何 `@deepseek-ai/*` 包，因此既能作为安装包加载，
+也能通过 profile patch 的 file URL 直接加载。
 
-## 安全
-
-远端 worker 的 token 等于那台电脑上的任意执行权限；只在自己可控的局域网内使用，
-不要把 token 提交进本仓库或发送到公共渠道。远端默认按会话启用 `danger-full-access`
-（自动执行、无审批），仅在你自己控制的电脑上部署。
+token / 配对码等于远端电脑上的任意执行权限；只在自己可控的局域网内使用，不要把配对码提交进
+仓库或发送到公共渠道。远端默认按会话启用 `danger-full-access`（自动执行、无审批）。
