@@ -1,0 +1,37 @@
+# Bundle patch for dsh-remote-control.
+#
+# The bundle is installed for its side-effect-free defaults: both roles start
+# disabled. Enable exactly one role in your profile's cordis.patch.yml, e.g.
+#
+# Controller (the computer you sit at):
+#
+#   - id: remote-control
+#     disabled: false
+#     config:
+#       role: controller
+#       hosts:
+#         - name: work-mac
+#           endpoint: 'http://192.168.1.20:7801'
+#           token: '<long random token, same as the worker>'
+#           description: '办公室 Mac'
+#
+# Worker (the computer to be controlled):
+#
+#   - id: remote-control
+#     disabled: false
+#     config:
+#       role: worker
+#       token: '<long random token, same as the controller>'
+#       listenHost: '0.0.0.0'
+#       port: 7801
+#       workspaceRoot: '/Users/me/work'
+#       provider: deepseek-account
+#       model: deepseek-flash
+
+- insert:
+    - id: remote-control
+      name: dsh-remote-control
+      disabled: true
+      config:
+        role: controller
+        hosts: []
