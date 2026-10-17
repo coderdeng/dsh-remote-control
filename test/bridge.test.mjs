@@ -151,6 +151,27 @@ async function freePort() {
   return port
 }
 
+/**
+ * DSH rejects tool results that are not lossless JSON (for example a member
+ * whose value is `undefined`). Mirror that check over every tool output.
+ */
+function assertLosslessJson(value, path = 'result') {
+  if (value === undefined) throw new Error(`${path} contains undefined`)
+  if (value === null) return
+  const type = typeof value
+  if (type === 'string' || type === 'boolean') return
+  if (type === 'number') {
+    assert.ok(Number.isFinite(value), `${path} contains a non-finite number`)
+    return
+  }
+  assert.equal(type, 'object', `${path} contains a non-JSON ${type}`)
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertLosslessJson(entry, `${path}[${index}]`))
+    return
+  }
+  for (const [key, entry] of Object.entries(value)) assertLosslessJson(entry, `${path}.${key}`)
+}
+
 // ---------------------------------------------------------------------------
 // protocol-level tests
 // ---------------------------------------------------------------------------
@@ -280,8 +301,10 @@ test('worker serves sessions and controller drives them end to end', async () =>
     assert.ok(byName.has('remote_dsh_start'))
     assert.ok(byName.has('remote_dsh_wait'))
 
+    const assertOutput = (value) => assertLosslessJson(value)
     const exec = { signal: new AbortController().signal }
     const hosts = await byName.get('remote_dsh_hosts').execute({}, exec)
+    assertOutput(hosts)
     assert.equal(hosts.hosts.length, 1)
     assert.equal(hosts.hosts[0].online, true)
 
@@ -289,28 +312,35 @@ test('worker serves sessions and controller drives them end to end', async () =>
     assert.equal(started.host, 'remote')
     assert.ok(started.sessionId.startsWith('session-'))
     assert.equal(started.idle, true)
+    assertOutput(started)
     assert.match(started.output, /assistant: reply to: say hi/u)
 
     // A follow-up via send + wait reads only the new transcript.
     const sent = await byName.get('remote_dsh_send').execute({ host: 'remote', sessionId: started.sessionId, text: 'again' }, exec)
+    assertOutput(sent)
     assert.equal(sent.status, 'running')
     const waited = await byName.get('remote_dsh_wait').execute({ host: 'remote', sessionId: started.sessionId, timeoutMs: 2000 }, exec)
+    assertOutput(waited)
     assert.equal(waited.idle, true)
     assert.match(waited.output, /reply to: again/u)
     assert.doesNotMatch(waited.output, /reply to: say hi/u)
 
     const status = await byName.get('remote_dsh_status').execute({ host: 'remote', sessionId: started.sessionId }, exec)
+    assertOutput(status)
     assert.equal(status.session.status, 'idle')
     assert.equal(status.session.turnCount, 2)
 
     const listed = await byName.get('remote_dsh_status').execute({ host: 'remote' }, exec)
+    assertOutput(listed)
     assert.equal(listed.sessions.length, 1)
 
     const log = await byName.get('remote_dsh_log').execute({ host: 'remote', sessionId: started.sessionId, afterSeq: 0 }, exec)
+    assertOutput(log)
     assert.match(log.output, /say hi/u)
     assert.match(log.output, /again/u)
 
     const aborted = await byName.get('remote_dsh_abort').execute({ host: 'remote', sessionId: started.sessionId }, exec)
+    assertOutput(aborted)
     assert.equal(aborted.aborted, true)
     assert.equal(fake.inbox.length, 2)
 
@@ -324,10 +354,12 @@ test('worker serves sessions and controller drives them end to end', async () =>
     const pairTools = new Map(pairingDefinitions.map((definition) => [definition.name, definition]))
     const pairedCode = encodePairingCode({ name: 'paired-remote', endpoint: `http://127.0.0.1:${port}`, token })
     const paired = await pairTools.get('remote_dsh_pair').execute({ code: pairedCode }, exec)
+    assertOutput(paired)
     assert.equal(paired.paired, true)
     assert.equal(paired.host, 'paired-remote')
     assert.equal(paired.updated, false)
     const pairedHosts = await pairTools.get('remote_dsh_hosts').execute({}, exec)
+    assertOutput(pairedHosts)
     assert.equal(pairedHosts.hosts.length, 1)
     assert.equal(pairedHosts.hosts[0].online, true)
     const stateFile = join(process.env.DSH_HOME, 'dsh-remote-control', 'hosts.json')
