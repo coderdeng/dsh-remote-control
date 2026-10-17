@@ -257,6 +257,39 @@ if [ -n "${PREV_PID:-}" ] && kill -0 "$PREV_PID" 2>/dev/null; then
   fi
 fi
 
+# Also stop an older worker of this profile that predates worker.json (for example
+# an installation made before this script existed), so upgrades never stack a
+# second listener on another port.
+stop_legacy_workers() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  command -v ps >/dev/null 2>&1 || return 0
+  self_pids=" $$ ${PPID:-0} "
+  pids="$(pgrep -f "profile[= ]$PROFILE" 2>/dev/null || true)"
+  [ -n "${pids:-}" ] || return 0
+  stopped=""
+  for pid in $pids; do
+    case "$self_pids" in *" $pid "*) continue ;; esac
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$cmd" in
+      *dsh*|*"DeepSeek Harness"*) ;;
+      *) continue ;;
+    esac
+    if [ "$DRY_RUN" = 1 ]; then
+      say "[dry-run] would stop older worker process $pid"
+    else
+      say "stopping older worker process $pid (profile $PROFILE)"
+      kill "$pid" 2>/dev/null || true
+      stopped="$stopped $pid"
+    fi
+  done
+  if [ "$DRY_RUN" = 0 ] && [ -n "$stopped" ]; then
+    sleep 2
+    for pid in $stopped; do kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true; done
+    sleep 1
+  fi
+}
+stop_legacy_workers
+
 PORT="$(pick_port "$PORT")"
 LAN_IP="$(detect_lan_ip)"
 ENDPOINT="http://$LAN_IP:$PORT"
