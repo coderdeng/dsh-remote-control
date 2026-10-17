@@ -27,6 +27,8 @@ bash scripts/worker-setup.sh                    # 重跑：升级插件并重启
 bash scripts/worker-setup.sh --status           # 查看状态 / 配对码
 bash scripts/worker-setup.sh --stop             # 停止 worker
 bash scripts/worker-setup.sh --mode bundle      # 改为以 DSH bundle 方式安装
+bash scripts/worker-setup.sh --keep-awake        # macOS：caffeinate 包住 worker，关屏/空闲不睡（默认开启）
+bash scripts/worker-setup.sh --launchd           # macOS：装 LaunchAgent，登录自启 + 崩溃自动拉起
 ```
 
 ### A 端（控制电脑）
@@ -40,6 +42,12 @@ agent 会调用 `remote_dsh_pair` 验证连通并持久保存（写入 `~/.dsh/d
 `remote_dsh_unpair` 移除。
 
 > A 端插件首次安装/升级后需要重启一次 DSH 才加载新代码；之后配对、加/删远端都不需要重启。
+
+### macOS 常驻与休眠
+
+- 默认在 macOS 上以 `caffeinate -i -s` 包住 worker：**屏幕关闭/空闲不会睡**（合盖仍会睡）。
+- `--launchd` 会安装 `~/Library/LaunchAgents/com.dsh.remote-control.worker.plist`：登录自启、崩溃自动拉起；`--stop` 会卸载它。
+- 合盖也要跑：接电源 + 外接显示器/键鼠的 clamshell 模式，或 `sudo pmset -a disablesleep 1`（危险，注意散热，用完改回 0）。
 
 ## 手动安装（不跑脚本时）
 

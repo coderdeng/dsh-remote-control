@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-control",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Control DeepSeek Harness sessions on another computer (worker + controller host plugins, zero external dependencies).",
   "type": "module",

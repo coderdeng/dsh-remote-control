@@ -3,8 +3,11 @@
 #
 #   bash scripts/worker-setup.sh                 # 默认：clone 仓库到 ~/dsh-remote-control，配置并启动 worker
 #   bash scripts/worker-setup.sh --dry-run       # 只打印计划，不做任何修改
-#   bash scripts/worker-setup.sh --status        # 查看当前 worker 状态
-#   bash scripts/worker-setup.sh --stop          # 停止当前 worker
+#   bash scripts/worker-setup.sh --status        # 查看当前 worker 状态（含 launchd / caffeinate）
+#   bash scripts/worker-setup.sh --stop          # 停止当前 worker（含卸载 launchd 任务）
+#   bash scripts/worker-setup.sh --keep-awake    # macOS：用 caffeinate 包住 worker，关屏/空闲也不睡
+#   bash scripts/worker-setup.sh --launchd       # macOS：安装 LaunchAgent（登录自启 + 崩溃自动拉起）
+#   bash scripts/worker-setup.sh --no-keep-awake # 关闭 keep-awake
 #
 # 也可以在 B 上一条命令执行（公开仓库）：
 #   curl -fsSL https://raw.githubusercontent.com/coderdeng/dsh-remote-control/main/scripts/worker-setup.sh | bash
@@ -30,6 +33,10 @@ PERMISSION_PRESET="${PERMISSION_PRESET:-danger-full-access}"
 START=1
 DRY_RUN=0
 ACTION=setup
+KEEP_AWAKE="${KEEP_AWAKE:-auto}"      # auto | 1 | 0 ; macOS defaults to on
+LAUNCHD="${LAUNCHD:-0}"               # 1 = install a LaunchAgent (login start + keepalive)
+LABEL="com.dsh.remote-control.worker"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -53,10 +60,25 @@ while [ $# -gt 0 ]; do
     --dry-run)            DRY_RUN=1; shift ;;
     --status)             ACTION=status; shift ;;
     --stop)               ACTION=stop; shift ;;
-    -h|--help)            sed -n '2,20p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --keep-awake)         KEEP_AWAKE=1; shift ;;
+    --no-keep-awake)      KEEP_AWAKE=0; shift ;;
+    --launchd)            LAUNCHD=1; shift ;;
+    --no-launchd)         LAUNCHD=0; shift ;;
+    -h|--help)            sed -n '2,24p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+is_darwin() { [ "$(uname -s 2>/dev/null || echo unknown)" = Darwin ]; }
+if [ "$KEEP_AWAKE" = auto ]; then
+  if is_darwin; then KEEP_AWAKE=1; else KEEP_AWAKE=0; fi
+fi
+if [ "$LAUNCHD" = 1 ] && ! is_darwin; then
+  die "--launchd is only supported on macOS"
+fi
+launchd_domain() { printf 'gui/%s' "$(id -u)"; }
+launchd_loaded() { launchctl print "$(launchd_domain)/$LABEL" >/dev/null 2>&1; }
+launchd_bootout() { launchctl bootout "$(launchd_domain)/$LABEL" >/dev/null 2>&1 || true; }
 
 PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
 PATCH="$PROFILE_DIR/cordis.patch.yml"
@@ -64,6 +86,7 @@ STATE_DIR="$DSH_HOME/dsh-remote-control"
 INFO="$STATE_DIR/worker.json"
 LOG="$STATE_DIR/worker.log"
 PAIR_FILE="$STATE_DIR/pairing.txt"
+RUNNER="$STATE_DIR/run-worker.sh"
 
 # ---------------------------------------------------------------- helpers ---
 find_dsh() {
@@ -145,22 +168,43 @@ pid_from_info() {
 
 # ------------------------------------------------------------ status/stop ---
 if [ "$ACTION" = status ]; then
-  if [ ! -f "$INFO" ]; then say "no worker info at $INFO (worker not set up yet)"; exit 0; fi
-  say "worker info: $INFO"
-  cat "$INFO"
+  if is_darwin; then
+    if launchd_loaded; then say "launchd    : loaded ($(launchd_domain)/$LABEL)"; else say "launchd    : not loaded"; fi
+  fi
+  if [ -f "$INFO" ]; then
+    say "worker info: $INFO"
+    cat "$INFO"
+  else
+    say "no worker info at $INFO (worker not set up yet)"
+  fi
   if [ -f "$PAIR_FILE" ]; then say ""; say "pairing code:"; cat "$PAIR_FILE"; fi
+  if is_darwin && command -v pgrep >/dev/null 2>&1; then
+    say ""
+    say "caffeinate : $(pgrep -fl 'caffeinate' 2>/dev/null | head -n 3 || true)"
+  fi
   pid="$(pid_from_info || true)"
-  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then say ""; say "process: running (pid $pid)"; else say ""; say "process: not running"; fi
+  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then say ""; say "process    : running (pid $pid)"; else say ""; say "process    : not running"; fi
   exit 0
 fi
 if [ "$ACTION" = stop ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    say "[dry-run] would stop the worker (launchd job if loaded, then the recorded pid)"
+    exit 0
+  fi
+  if is_darwin && launchd_loaded; then
+    say "unloading launchd job $LABEL"
+    launchd_bootout
+    sleep 1
+  fi
   pid="$(pid_from_info || true)"
-  if [ -z "${pid:-}" ] || ! kill -0 "$pid" 2>/dev/null; then say "worker is not running"; exit 0; fi
-  if [ "$DRY_RUN" = 1 ]; then say "[dry-run] would stop pid $pid"; exit 0; fi
-  kill "$pid" 2>/dev/null || true
-  i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
-  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-  say "stopped worker (pid $pid)"
+  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    say "stopped worker (pid $pid)"
+  else
+    say "worker is not running"
+  fi
   exit 0
 fi
 
@@ -263,6 +307,11 @@ fi
 stop_legacy_workers() {
   command -v pgrep >/dev/null 2>&1 || return 0
   command -v ps >/dev/null 2>&1 || return 0
+  if is_darwin && launchd_loaded; then
+    say "unloading launchd job $LABEL"
+    launchd_bootout
+    sleep 1
+  fi
   self_pids=" $$ ${PPID:-0} "
   pids="$(pgrep -f "profile[= ]$PROFILE" 2>/dev/null || true)"
   [ -n "${pids:-}" ] || return 0
@@ -354,11 +403,19 @@ say "==> mode       : $([ "$USE_BUNDLE" = 1 ] && echo bundle || echo clone)"
 say "==> endpoint   : $ENDPOINT"
 say "==> model      : $PROVIDER/$MODEL"
 say "==> workspace  : $WORKSPACE"
+if is_darwin; then
+  say "==> keep awake : $([ "$KEEP_AWAKE" = 1 ] && echo 'yes (caffeinate -i -s)' || echo no)"
+  say "==> launchd    : $([ "$LAUNCHD" = 1 ] && echo 'yes (login start + keepalive)' || echo no)"
+fi
 say ""
 
 if [ "$DRY_RUN" = 1 ]; then
   say "----- [dry-run] profile patch that would be written to $PATCH -----"
   printf '%s\n' "$WORKER_PATCH"
+  if is_darwin && [ "$LAUNCHD" = 1 ]; then
+    say "----- [dry-run] would install LaunchAgent $AGENT_PLIST -----"
+    say "Label=$LABEL  RunAtLoad=true  KeepAlive=true  runner=$RUNNER"
+  fi
   say "----- [dry-run] pairing code that would be printed -----"
   say "$CODE"
   say "----- [dry-run] no files were changed, worker was not started -----"
@@ -374,18 +431,73 @@ chmod 600 "$PATCH" 2>/dev/null || true
 
 if [ "$START" = 1 ]; then
   : > "$LOG"
-  nohup "$DSH" --profile "$PROFILE" >"$LOG" 2>&1 &
-  NEW_PID=$!
-  say "worker starting (pid $NEW_PID), log: $LOG"
+  if [ "$LAUNCHD" = 1 ]; then
+    mkdir -p "$(dirname "$AGENT_PLIST")"
+    {
+      say '#!/bin/bash'
+      say '# generated by worker-setup.sh: launchd entry point for the DSH worker'
+      say "exec >>\"$LOG\" 2>&1"
+      if [ "$KEEP_AWAKE" = 1 ] && command -v caffeinate >/dev/null 2>&1; then
+        say "exec /usr/bin/caffeinate -i -s \"$DSH\" --profile \"$PROFILE\""
+      else
+        say "exec \"$DSH\" --profile \"$PROFILE\""
+      fi
+    } > "$RUNNER"
+    chmod 700 "$RUNNER"
+    cat > "$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$RUNNER</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DSH_HOME</key>
+    <string>$DSH_HOME</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>$LOG</string>
+  <key>StandardErrorPath</key>
+  <string>$LOG</string>
+</dict>
+</plist>
+PLIST
+    launchd_bootout
+    sleep 1
+    launchctl bootstrap "$(launchd_domain)" "$AGENT_PLIST" || die "launchctl bootstrap failed for $AGENT_PLIST"
+    say "launchd: installed $LABEL (RunAtLoad + KeepAlive)"
+  else
+    if [ "$KEEP_AWAKE" = 1 ] && command -v caffeinate >/dev/null 2>&1; then
+      nohup caffeinate -i -s "$DSH" --profile "$PROFILE" >"$LOG" 2>&1 &
+    else
+      nohup "$DSH" --profile "$PROFILE" >"$LOG" 2>&1 &
+    fi
+    NEW_PID=$!
+    say "worker starting (pid $NEW_PID), log: $LOG"
+  fi
   READY=0
   i=0
-  while [ "$i" -lt 45 ]; do
+  while [ "$i" -lt 60 ]; do
     if curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/v1/hello" >/dev/null 2>&1; then READY=1; break; fi
     sleep 1; i=$((i + 1))
   done
   if [ "$READY" != 1 ]; then
-    warn "worker did not answer /v1/hello within 45s. Log tail:"
-    tail -n 30 "$LOG" >&2 || true
+    warn "worker did not answer /v1/hello within 60s. Log tail:"
+    tail -n 40 "$LOG" >&2 || true
     die "setup failed; fix the log above and re-run this script (it is idempotent)"
   fi
   # Prefer the worker's own facts (actual port/pairing code) when available.
@@ -403,6 +515,8 @@ mkdir -p "$STATE_DIR"
   say "endpoint=$ENDPOINT"
   say "token=$TOKEN"
   say "pairing_code=$CODE"
+  say "keep_awake=$KEEP_AWAKE"
+  say "launchd=$LAUNCHD"
   say "log=$LOG"
 } > "$PAIR_FILE"
 chmod 600 "$PAIR_FILE" 2>/dev/null || true
@@ -413,6 +527,10 @@ say " ✓ 远端 worker 已就绪"
 say "   主机名   : $HOSTNAME_S"
 say "   地址     : $ENDPOINT"
 say "   配对码   : $CODE"
+if is_darwin; then
+  say "   常驻方式 : $([ "$LAUNCHD" = 1 ] && echo 'launchd（登录自启 + 崩溃自动拉起）' || echo '普通后台进程（终端/重启后需重跑脚本）')"
+  say "   休眠策略 : $([ "$KEEP_AWAKE" = 1 ] && echo 'caffeinate 阻止空闲睡眠（合盖仍会睡，需 clamshell 或 pmset disablesleep）' || echo '未阻止睡眠')"
+fi
 say ""
 say " 把上面这行配对码发给 A 端 DSH 的 agent 即可（它包含 token，等同于密码，不要外传）："
 say "   在 A 的聊天里说：把这条配对码配对成远端电脑：$CODE"

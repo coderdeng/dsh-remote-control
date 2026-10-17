@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- feat(scripts): macOS `--keep-awake` (wrap worker in `caffeinate -i -s`) and `--launchd`
+  (LaunchAgent with RunAtLoad + KeepAlive, installed/uninstalled by the script); `--status`
+  now reports launchd/caffeinate state; `--stop` unloads the LaunchAgent first.
+- docs: macOS sleep/power behaviour (AC vs battery, lid close, clamshell, `pmset disablesleep`).
+
 ## 0.2.1
 
 - fix(controller): strip `undefined` members from tool results before returning them

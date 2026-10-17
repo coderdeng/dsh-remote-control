@@ -156,6 +156,24 @@ $node = 'C:\DSH\resources\runtime\primary-runtime\dependencies\node\bin\node.exe
 
 ---
 
+### 2.7 macOS 睡眠与常驻（keep-awake / launchd）
+
+B 是 MacBook 时，默认「接电源不休眠、电池空闲约 1 分钟睡眠、合盖必睡」。脚本在 macOS 上默认：
+
+- 用 `caffeinate -i -s` 包住 worker → 屏幕关闭/空闲不睡（合盖仍会睡）；
+- 传 `--launchd` 时安装 LaunchAgent（`~/Library/LaunchAgents/com.dsh.remote-control.worker.plist`，
+  `RunAtLoad + KeepAlive`）：登录自启、崩溃自动拉起；`--stop` 会一并卸载。
+
+```bash
+bash scripts/worker-setup.sh --keep-awake --launchd   # 推荐：关屏+常驻
+bash scripts/worker-setup.sh --status                 # 查看 launchd / caffeinate / 进程状态
+bash scripts/worker-setup.sh --stop                   # 停止并卸载 launchd 任务
+```
+
+合盖仍要跑（二选一）：接电源 + 外接显示器/键鼠的 clamshell 模式；或
+`sudo pmset -a disablesleep 1`（阻止合盖睡眠，**注意散热，用完改回 0**）。
+睡眠时 worker 冻结、A 端请求会超时；唤醒后进程与会话仍在，重试即可。
+
 ## 3. A 端（本机）配置
 
 ### 3.1 用配对码添加（推荐，免改配置）
@@ -229,7 +247,8 @@ agent 会调用 `remote_dsh_hosts`；显示 online 后即可：
 | 场景 | 操作 |
 | --- | --- |
 | 查看 B 日志 | `~/dsh-worker.log`（nohup 时）或前台输出 |
-| 停止 B worker | 前台 Ctrl+C；后台 `pkill -f "profile dsh-worker"` |
+| 停止 B worker | `bash scripts/worker-setup.sh --stop`（有 launchd 会一并卸载）；或前台 Ctrl+C |
+| Mac 关屏后任务停了 | 检查是否用电池睡眠：接电源，或用脚本默认的 `--keep-awake`；`--status` 看 caffeinate/launchd |
 | 换 token | 改 B 配置并重启 worker；改 A 的 `hosts[].token` 保存即可 |
 | 多台远端 | A 的 `hosts` 追加条目；工具用 `host` 参数区分 |
 | 暂停远程功能 | A 的 `hosts: []` 保存 |
