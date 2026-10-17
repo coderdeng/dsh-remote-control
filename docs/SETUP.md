@@ -13,8 +13,8 @@
 
 | 方式 | 命令 | 说明 |
 | --- | --- | --- |
-| **A. clone + file URL（推荐）** | `git clone <repo-url> ~/dsh-remote-control` | 不依赖 npm/pnpm 网络，插件零依赖，最稳 |
-| B. `dsh plugin add git+…`（可选） | `dsh plugin --profile dsh-worker add git+<repo-url>` | 作为 DSH bundle 安装，需要 B 有网络/pnpm 且有权限访问仓库 |
+| **A. clone + file URL（推荐）** | `git clone https://github.com/coderdeng/dsh-remote-control.git ~/dsh-remote-control` | 不依赖 npm/pnpm 网络，插件零依赖，最稳 |
+| B. `dsh plugin add git+…`（可选） | `dsh plugin --profile dsh-worker add git+https://github.com/coderdeng/dsh-remote-control.git` | 作为 DSH bundle 安装，需要 B 有网络/pnpm 且有权限访问仓库 |
 
 下面默认方式 A；方式 B 见第 5 节。
 
@@ -30,7 +30,7 @@ B 上放行 TCP 7801（防火墙）；两端 DSH 版本尽量一致（本插件�
 ### 1.1 clone 仓库
 
 ```bash
-git clone <repo-url> ~/dsh-remote-control
+git clone https://github.com/coderdeng/dsh-remote-control.git ~/dsh-remote-control
 cd ~/dsh-remote-control
 ls lib/            # 应看到 controller.js worker.js protocol.js index.js
 ```
@@ -210,8 +210,8 @@ agent 会调用 `remote_dsh_hosts`；显示 online 后即可：
 本仓库根目录就是包本身，带 `dsh.bundle.patch`，可以直接按 bundle 安装：
 
 ```bash
-dsh plugin --profile dsh-worker add git+<repo-url>
-# 或固定提交：dsh plugin --profile dsh-worker add 'git+<repo-url>#<commit>'
+dsh plugin --profile dsh-worker add git+https://github.com/coderdeng/dsh-remote-control.git
+# 或固定提交：dsh plugin --profile dsh-worker add 'git+https://github.com/coderdeng/dsh-remote-control.git#<commit>'
 ```
 
 首次执行会自动初始化一个 **base profile**，并把它加入 `dsh.profile.bundles`；bundle 的

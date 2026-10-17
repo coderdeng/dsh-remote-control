@@ -12,7 +12,7 @@ DeepSeek Harness（DSH）跨机远程控制插件：一个包、两种角色，�
 ### B 端（被控电脑）
 
 ```bash
-git clone <repo-url> ~/dsh-remote-control
+git clone https://github.com/coderdeng/dsh-remote-control.git ~/dsh-remote-control
 dsh --profile dsh-worker --from-default-profile sdk --dump-config > /dev/null
 # 编辑 ~/.dsh/profiles/dsh-worker/cordis.patch.yml（见 docs/SETUP.md 1.4 节）
 dsh --profile dsh-worker

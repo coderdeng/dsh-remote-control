@@ -11,6 +11,13 @@
     "./controller": "./lib/controller.js",
     "./package.json": "./package.json"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coderdeng/dsh-remote-control.git"
+  },
+  "scripts": {
+    "test": "node --test test/bridge.test.mjs"
+  },
   "files": [
     "lib",
     "cordis.patch.yml",
